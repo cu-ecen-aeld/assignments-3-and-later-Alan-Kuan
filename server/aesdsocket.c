@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <syslog.h>
@@ -27,14 +28,55 @@ void handler(int signum) {
         fclose(data_file);
     }
 
-    if (unlink("/var/tmp/aesdsocketdata") == -1) {
-        perror("unlink");
+    if (access("/var/tmp/aesdsocketdata", F_OK) == 0) {
+        if (unlink("/var/tmp/aesdsocketdata") == -1) {
+            perror("unlink");
+        }
     }
 
     exit(0);
 }
 
-int main(void) {
+void daemonize(void) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        exit(-1);
+    }
+    if (pid > 0) {
+        exit(0);
+    }
+
+    if (setsid() < 0) {
+        perror("setsid");
+        exit(-1);
+    }
+
+    signal(SIGCHLD, SIG_IGN);
+    signal(SIGHUP, SIG_IGN);
+
+    pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        exit(-1);
+    }
+    if (pid > 0) {
+        exit(0);
+    }
+
+    umask(0022);
+
+    if (chdir("/") < 0) {
+        perror("chdir");
+        exit(-1);
+    }
+
+    close(0);
+    close(1);
+    close(2);
+}
+
+int main(int argc, char* argv[]) {
     openlog(NULL, 0, LOG_USER);
 
     struct sigaction action;
@@ -56,6 +98,11 @@ int main(void) {
         return -1;
     }
 
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &(int){1}, sizeof(int)) == -1) {
+        perror("setsockopt");
+        return -1;
+    }
+
     struct sockaddr_in server_addr;
     uint32_t converted_addr;
 
@@ -72,6 +119,10 @@ int main(void) {
     if (bind(sockfd, (struct sockaddr*) &server_addr, sizeof(server_addr)) == -1) {
         perror("bind");
         return -1;
+    }
+
+    if (argc == 2 && strcmp(argv[1], "-d") == 0) {
+        daemonize();
     }
 
     if (listen(sockfd, 16) == -1) {
